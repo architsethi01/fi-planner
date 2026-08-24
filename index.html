@@ -256,6 +256,9 @@ button.rs:hover{background:var(--posbg)}
       <div class="f"><label>Total gross</label><input type="text" id="incTotal" readonly style="background:#EDEFEA;font-weight:600"></div>
       <div class="hint" id="eqHint"></div>
     </div>
+    <div class="f" id="earnWrap" style="margin-top:10px"><label for="nEarn" id="earnLab">Number of earners</label>
+      <select id="nEarn"><option value="1">One</option><option value="2" selected>Two</option></select></div>
+    <div class="hint" id="earnHint"></div>
     <div class="f" style="margin-top:10px"><label for="city">Where you live now</label><select id="city"></select></div>
     <div class="hint" id="cityHint"></div>
     <div class="f" style="margin-top:10px"><label for="pre" id="preLab">Pre-tax contributions</label><input type="number" id="pre" step="1000"></div>
@@ -599,9 +602,15 @@ var CFG={
    {t:"General investment account",p:"no limit",b:"For anything beyond the ISA allowance. Gains above the £3,000 annual exempt amount are taxed at 18% or 24%, and dividends above the £500 allowance at 8.75%, 33.75% or 39.35%. Fill the ISA first, every single year, before anything goes here."}]}
 };
 
-var SOC={us:function(g){return .062*Math.min(g/2,184500)*2+.0145*g+.009*Math.max(0,g-250000)},
+/* Social contributions are per-person, so the number of earners matters once
+   income passes a per-person cap or threshold. */
+function earners(){var n=parseInt(($("nEarn")||{}).value,10);return (n===1||n===2)?n:2}
+var SOC={
+ us:function(g){var n=earners(),per=g/n;
+   return n*.062*Math.min(per,184500)+.0145*g+.009*Math.max(0,g-250000)},
  in:function(){return 0},
- uk:function(g){return .08*Math.max(0,Math.min(g,50270)-12570)+.02*Math.max(0,g-50270)}};
+ uk:function(g){var n=earners(),per=g/n;
+   return n*(.08*Math.max(0,Math.min(per,50270)-12570)+.02*Math.max(0,per-50270))}};
 
 function fmt(n){
  var s=CFG[C].sym,a=Math.abs(Math.round(n)),sg=n<0?"−":"";
@@ -622,11 +631,15 @@ function cityName(sel){var v=$(sel).value,arr=CITY[C];
  for(var i=0;i<arr.length;i++)if(arr[i][0]===v)return arr[i][1];return ""}
 
 function tax(g,pre){
- var cf=CFG[C],ti=Math.max(0,g-pre-cf.std),t=0,p=0,br=cf.brackets;
+ var cf=CFG[C];
+ /* India's new regime (the default) disallows 80C/NPS-style deductions, so
+    pre-tax contributions must NOT reduce taxable income there. */
+ var ded=(C==="in")?0:pre;
+ var ti=Math.max(0,g-ded-cf.std),t=0,p=0,br=cf.brackets;
  for(var i=0;i<br.length;i++){if(ti>p)t+=(Math.min(ti,br[i][0])-p)*br[i][1];p=br[i][0];if(ti<=p)break}
  if(C==="in"){if(ti<=1200000)t=Math.max(0,t-60000);
   var s=ti>20000000?.25:ti>10000000?.15:ti>5000000?.10:0;t=t*(1+s)*1.04}
- if(C==="uk")t+=Math.min(12570,Math.max(0,(g-pre-100000)/2))*0.40;
+ if(C==="uk")t+=Math.min(12570,Math.max(0,(g-ded-100000)/2))*0.40;
  return {tax:t+SOC[C](g),inc:t,soc:SOC[C](g),taxable:ti};
 }
 function marg(g,pre){var d=C==="in"?1000:100;
@@ -661,15 +674,15 @@ function expenses(){
  /* Returns {total, perm} in annual terms.
     total = everything you pay now (drives savings capacity)
     perm  = what continues in retirement (drives the freedom number) */
- if($("spMode").value==="total"){var t=rd("spend");return {total:t,perm:t,built:false}}
- var t=0,p=0,hm=$("houseMode").value;
+ if($("spMode").value==="total"){var t=rd("spend");return {total:t,perm:t,housing:t*0.33,built:false}}
+ var t=0,p=0,h=0,hm=$("houseMode").value;
  if(hm==="rent"){
-  var rn=(rd("rentAmt")+rd("rentUtil"))*12;t+=rn;p+=rn;          /* rent never ends */
+  var rn=(rd("rentAmt")+rd("rentUtil"))*12;t+=rn;p+=rn;h+=rn;    /* rent never ends */
  } else {
   var mg=rd("mortAmt")*12;t+=mg;
   if(rd("mortYrs")<=0)p+=mg;                                      /* already paid off */
   var own=rd("propTax")+rd("homeIns")+rd("maint")+rd("hoa")*12;
-  t+=own;p+=own;                                                  /* these never end */
+  t+=own;p+=own;h+=own;                                           /* these never end */
  }
  var cm=$("carMode").value;
  if(cm!=="none"){
@@ -680,7 +693,7 @@ function expenses(){
  if($("hasLoan").value==="yes"){t+=rd("loanAmt")*12}              /* loans end */
  var liv=(rd("food")+rd("other")+(CFG[C].ex.health?rd("health"):0))*12+rd("travel");
  t+=liv;p+=liv;
- return {total:t,perm:p,built:true};
+ return {total:t,perm:p,housing:h,built:true};
 }
 
 function syncExpenseUI(){
@@ -723,6 +736,11 @@ function loadCountry(k){
  $("hoaLab").textContent=cf.ex.hoaLab;$("loanLab").textContent=cf.ex.loanLab;
  $("propTaxLab").textContent=cf.ex.propTaxLab;$("otherHint").textContent=cf.ex.otherHint;
  $("loanType").innerHTML=cf.ex.loans.map(function(l){return '<option>'+l+'</option>'}).join("");
+ $("earnWrap").style.display=(C==="in")?"none":"block";
+ $("earnHint").style.display=(C==="in")?"none":"block";
+ $("earnHint").innerHTML=(C==="us")
+  ? "Social Security stops at $184,500 of wages <em>per person</em>, so a couple earning the same total pays more than a single earner above that line."
+  : "National Insurance is charged per person, so two earners splitting the same total pay differently from one.";
  $("iBase").value=cf.iBase;$("iEq").value=cf.iEq;$("iBon").value=cf.iBon;
  $("iEqLab").textContent="Equity vesting /yr";
  $("eqHint").textContent=cf.eqHint;
@@ -779,7 +797,11 @@ function go(){
 
  var mNow=mult("city"),mRet=mult("cityRet");
  var geoF=mRet/mNow;
- var spendRet=spendPerm*geoF;
+ /* Cost-of-living indices are dominated by housing. Scaling ALL spending by them
+    overstates a move badly, so only the housing portion is adjusted. */
+ var hPerm=Math.min(E.housing,spendPerm);
+ var spendRet=(spendPerm-hPerm)+hPerm*geoF;
+ var effGeo=spendPerm>0?spendRet/spendPerm:1;
 
  var b=blend(),r=b.r/100;
  $("blendN").value=b.n.toFixed(1)+"%";$("blendR").value=b.r.toFixed(1)+"%";
@@ -794,7 +816,10 @@ function go(){
  if(!okT&&$("normBtn"))$("normBtn").addEventListener("click",normalize);
 
  var nat=spend/mNow;
- $("cityHint").innerHTML="Index "+(mNow*100).toFixed(0)+" against "+(C==="in"?"Mumbai":C==="uk"?"the UK average":"the US average")+" of 100. Your "+fmt(spend)+" here is about <strong>"+fmt(nat)+"</strong> of lifestyle at "+(C==="in"?"Mumbai":"average")+" prices — a sanity check on the figure above, not something applied to it.";
+ var same=Math.abs(mNow-mRet)<0.02;
+ $("cityHint").innerHTML="Index <strong>"+(mNow*100).toFixed(0)+"</strong> against "+(C==="in"?"Mumbai":C==="uk"?"the UK average":"the US average")+" of 100."+
+  (same?" Set the retirement location below to somewhere different and this becomes the starting point for the comparison."
+       :" This is the <em>starting</em> point: your spending is assumed to buy a "+cityName("city")+" lifestyle today, and the housing part of it is repriced for "+cityName("cityRet")+" below.");
 
  var T=tax(inc,pre),mg=marg(inc,pre);
  var rCf=nP>0?rd("rRent")-rd("rCost"):0,rEq=nP>0?rd("rEq"):0;
@@ -823,10 +848,11 @@ function go(){
  var horizon=Math.max(30,retAge-age+2),bal=start,ser=[],tgt=[],hit=-1,projAt=0;
  for(var y=0;y<=horizon;y++){
   var sp=spend+kc(y),sv=inc-T.tax-sp+rCf;
-  ser.push(bal);tgt.push((spendRet+kc(y)*geoF)*wrM);
+  ser.push(bal);tgt.push((spendRet+kc(y)*effGeo)*wrM);
   if(hit<0&&bal>=tgt[y])hit=y;
   if(y===yrsTo)projAt=bal;
   bal=bal*(1+r)+Math.max(0,sv)+(nP>0?rEq*rd("rApp")/100:0)}
+ var yrsOfSaving=save0>0?start/save0:0;
  $("v-proj").textContent=fmt(projAt);$("s-proj").textContent="at age "+fiAge;
  var fiHit=hit>=0?age+hit:-1;
 
@@ -840,16 +866,26 @@ function go(){
  else if(fiHit>0&&fiHit<=fiAge) vd="<strong style='color:var(--pos)'>On track.</strong> At "+fmt(save0/12)+" a month you reach "+fmt(need)+" around age <strong>"+fiHit+"</strong>"+(fiHit<fiAge?", ahead of the "+fiAge+" target":"")+". The surplus of "+fmt((save0-reqA)/12)+" a month is a real choice rather than a requirement: bank it and finish sooner, or spend it and keep this date.";
  else if(fiHit>0) vd="<strong>Freedom lands around age "+fiHit+"</strong>, later than the "+fiAge+" target. Closing that gap needs "+fmt(reqA/12)+" a month rather than "+fmt(save0/12)+". Section 06 ranks which lever does that most efficiently — it is rarely the investment mix.";
  else vd="<strong style='color:var(--neg)'>Target not reached within 30 years</strong> at this savings rate. Raising savings or lowering the target are the levers that work; changing the portfolio moves it far less than most people expect.";
+ if(save0>0){
+  vd+="<br><br><strong>What you already have is worth "+yrsOfSaving.toFixed(1)+" years of saving.</strong> "+
+   (yrsOfSaving<3
+    ? "That is why changing your starting assets moves the freedom date so little: at "+fmt(save0/12)+" a month, the savings stream does nearly all the work from here. Early on, the rate you save matters far more than the pile you have."
+    : yrsOfSaving<8
+      ? "Your existing pot and your savings rate are both doing real work. From roughly this point, compounding starts to contribute as much as new contributions."
+      : "You are past the point where saving dominates. Returns on what you already hold now move the date more than new contributions do, which is why the portfolio mix starts to matter more from here.");
+ }
  $("verdict").innerHTML=vd;
  draw(ser,tgt,age,hit,fiAge);
 
  var gb=$("geoBox");
- if(Math.abs(geoF-1)>0.02){
-  var diff=need-spend*wrM;
-  gb.innerHTML='<div class="c '+(geoF<1?"gold":"warn")+'"><div class="ct"><h4>Cost of living is doing '+(geoF<1?"a lot of the work":"real damage")+' here</h4>'+
-   '<span class="p '+(geoF<1?"gold":"red")+'">'+(geoF<1?"−":"+")+Math.abs((1-geoF)*100).toFixed(0)+'% target</span></div>'+
-   '<p>You live in <strong>'+cityName("city")+'</strong> (index '+(mNow*100).toFixed(0)+') and plan to be in <strong>'+cityName("cityRet")+'</strong> (index '+(mRet*100).toFixed(0)+') at freedom. That '+(geoF<1?"reduces":"raises")+' your target from '+fmt(spend*wrM)+' to <strong>'+fmt(need)+'</strong> — a '+(geoF<1?"saving":"cost")+' of '+fmt(Math.abs(diff))+' in capital you '+(geoF<1?"never have to accumulate":"must find")+'.</p>'+
-   '<p>Almost nothing else in a financial plan moves the number this much. Relocating is not free — family, healthcare, schooling and visas all matter more than a spreadsheet suggests — but as arithmetic, moving somewhere cheaper at retirement is usually worth more than years of extra saving or a better fund choice.</p></div>';
+ if(Math.abs(effGeo-1)>0.01){
+  var diff=need-spendPerm*wrM;
+  gb.innerHTML='<div class="c '+(effGeo<1?"gold":"warn")+'"><div class="ct"><h4>Moving '+(effGeo<1?"somewhere cheaper lowers what you need":"somewhere pricier raises what you need")+'</h4>'+
+   '<span class="p '+(effGeo<1?"gold":"red")+'">'+(effGeo<1?"−":"+")+Math.abs((1-effGeo)*100).toFixed(0)+'% target</span></div>'+
+   '<p>You live in <strong>'+cityName("city")+'</strong> (index '+(mNow*100).toFixed(0)+') and plan to be in <strong>'+cityName("cityRet")+'</strong> (index '+(mRet*100).toFixed(0)+') at freedom. Your target moves from '+fmt(spendPerm*wrM)+' to <strong>'+fmt(need)+'</strong>.</p>'+
+   '<p><strong>Only the housing part of your spending is repriced</strong> — about '+fmt(hPerm)+' a year of the '+fmt(spendPerm)+' that continues into retirement. Groceries, travel, insurance and subscriptions barely move between cities, so scaling all of your spending by a cost-of-living index would overstate the effect badly.</p>'+
+   '<p>One thing worth understanding: changing <em>where you live now</em> also changes this number, because the app treats your spending as buying a '+cityName("city")+' lifestyle. Tell it you spend '+fmt(spend)+' in an expensive city and it assumes a more modest life than the same figure in a cheap one — so the housing you are replacing is dearer, and the move saves more. If that is not what you meant, adjust the spending figure to match the city.</p>'+
+   '<p>Relocating is never purely arithmetic: family, healthcare, schooling and visas usually matter more than the index does.</p></div>';
  }
  if(!gb.innerHTML) gb.innerHTML='<div class="c info"><div class="ct"><h4>Try changing where you will live at freedom</h4><span class="p info">experiment</span></div><p>The two location selectors in the sidebar are independent. Staying put keeps your target where it is — but switching the second one to a lower-cost area shows how much capital you would simply never need to accumulate. For many people this lever outweighs every other decision in the plan.</p></div>';
  var extra='<div class="c '+(mixOK?"info":"warn")+'"><div class="ct"><h4>What the portfolio mix does and does not change</h4><span class="p '+(mixOK?"info":"red")+'">'+b.r.toFixed(1)+'% real</span></div>'+
@@ -886,7 +922,7 @@ function go(){
  $("e-tot").textContent=fmt(spend);
  $("e-perm").textContent=fmt(spendPerm);
  $("e-temp").textContent=fmt(temp);
- $("e-saved").textContent=fmt(temp*wrM*geoF);
+ $("e-saved").textContent=fmt(temp*wrM*effGeo);
  $("e-tempS").textContent=temp>0?"mortgage, car or other loans":"nothing temporary";
  var eb=$("eBox");eb.innerHTML="";
  function ec(t,p,cls,body){var d=document.createElement("div");d.className="c "+cls;
@@ -894,13 +930,13 @@ function go(){
  if(!E.built) ec("You are entering a single total","switch to line-by-line","info",
   "<p>That works, but the builder in the sidebar separates debt that ends from spending that continues — which usually lowers the freedom number by a meaningful amount. It also tends to surface costs people forget: maintenance, insurance renewals, annual subscriptions and irregular repairs.</p>");
  else {
-  if(temp>0) ec("Debt that ends is worth "+fmt(temp*wrM*geoF)+" of capital you never have to save","the hidden discount","gold",
-   "<p>You pay "+fmt(temp)+" a year on borrowing that amortises to zero. Because it will not exist in retirement, it does not need funding at "+wrM+"× — so your target is "+fmt(temp*wrM*geoF)+" lower than a naive calculation using total spending.</p>"+
+  if(temp>0) ec("Debt that ends is worth "+fmt(temp*wrM*effGeo)+" of capital you never have to save","the hidden discount","gold",
+   "<p>You pay "+fmt(temp)+" a year on borrowing that amortises to zero. Because it will not exist in retirement, it does not need funding at "+wrM+"× — so your target is "+fmt(temp*wrM*effGeo)+" lower than a naive calculation using total spending.</p>"+
    "<p>The catch: this only holds if the debt actually ends before you stop working, and if you do not replace it. Refinancing a mortgage back out to thirty years, or rolling into a new car loan every four years, quietly converts temporary spending into permanent spending — and the freedom number rises accordingly.</p>");
   if($("carMode").value==="lease") ec("A lease is permanent spending, not temporary","counts in full","warn",
-   "<p>Car loans end and leave you owning a car. Leases end and leave you with nothing, so in practice they renew indefinitely — which means the payment belongs in your freedom number for life. At "+fmt(rd("carAmt")*12)+" a year that is "+fmt(rd("carAmt")*12*wrM*geoF)+" of extra capital you need. Buying and holding a car is usually the cheaper long-run path for anyone pursuing early independence.</p>");
+   "<p>Car loans end and leave you owning a car. Leases end and leave you with nothing, so in practice they renew indefinitely — which means the payment belongs in your freedom number for life. At "+fmt(rd("carAmt")*12)+" a year that is "+fmt(rd("carAmt")*12*wrM*effGeo)+" of extra capital you need. Buying and holding a car is usually the cheaper long-run path for anyone pursuing early independence.</p>");
   if($("houseMode").value==="rent") ec("Renting keeps flexibility but never stops costing","permanent","info",
-   "<p>Rent is fully permanent spending, and it rises with inflation, so it needs funding at "+wrM+"× forever — currently "+fmt((rd("rentAmt")+rd("rentUtil"))*12*wrM*geoF)+" of your target.</p>"+
+   "<p>Rent is fully permanent spending, and it rises with inflation, so it needs funding at "+wrM+"× forever — currently "+fmt((rd("rentAmt")+rd("rentUtil"))*12*wrM*effGeo)+" of your target.</p>"+
    "<p>That is not an argument that owning always wins. Owning replaces rent with property tax, insurance and maintenance, which never end either — typically 2–4% of the property value each year. The genuine advantage of owning is that the largest component, the mortgage, does eventually stop. The genuine advantage of renting is mobility, which is worth a great deal if you might relocate at retirement.</p>");
   else if(rd("mortYrs")>0) ec("Your mortgage ends in "+rd("mortYrs")+" years","then "+fmt(rd("mortAmt")*12)+"/yr frees up","gold",
    "<p>You will be "+(rd("age")+rd("mortYrs"))+" when it finishes. Property tax, insurance, maintenance and dues continue — "+fmt(rd("propTax")+rd("homeIns")+rd("maint")+rd("hoa")*12)+" a year in your case — so owning outright is cheaper than renting, not free.</p>"+
@@ -997,7 +1033,7 @@ function go(){
   ["Spend 10% less",spendRet*0.9,r,save0+spend*0.1,"lowers the target and raises savings at once — the double effect"],
   ["Spend 10% more",spendRet*1.1,r,save0-spend*0.1,"the same mechanism working against you"],
   ["Save "+fmt(spend*0.05/12)+"/mo more",spendRet,r,save0+spend*0.05,"a raise or an expense cut, target unchanged"],
-  ["Retire in "+lowest[1],spend/mNow*lowest[2],r,save0,"geoarbitrage — often the strongest single lever"],
+  ["Retire in "+lowest[1],(spendPerm-hPerm)+hPerm*(lowest[2]/mNow),r,save0,"geoarbitrage, housing repriced only"],
   ["Returns 2% lower",spendRet,r-0.02,save0,"a poor decade, or a more conservative mix"],
   ["Returns 2% higher",spendRet,r+0.02,save0,"a good decade — note it moves less than spending does"]
  ].forEach(function(s,i){
@@ -1062,7 +1098,7 @@ $("mbJump").addEventListener("click",function(){
 
 document.querySelectorAll(".cbtn").forEach(function(b){
  b.addEventListener("click",function(){loadCountry(b.dataset.c)})});
-["inc","incMode","iBase","iEq","iBon","spend","spMode","city","cityRet","pre","age","fiAge","mode","retAge","wr","aRet","aInv","aCash","aOth",
+["inc","incMode","nEarn","iBase","iEq","iBon","spend","spMode","city","cityRet","pre","age","fiAge","mode","retAge","wr","aRet","aInv","aCash","aOth",
  "nProp","rRent","rCost","rEq","rApp","nKids","kid1","kEarly","kSchool","kUni",
  "houseMode","rentAmt","rentUtil","mortAmt","mortYrs","propTax","homeIns","hoa","maint",
  "carMode","carAmt","carYrs","carRun","hasLoan","loanType","loanAmt","loanYrs",
